@@ -58,9 +58,7 @@ data/nhcd/nhcd/numerals/
   └── 9/
 ```
 
-Each subfolder contains grayscale handwritten digit images for that class.
 
-> **Note:** The dataset (`archive.zip`) and trained model (`best_model.pth`) are not included in this repository due to their size. See the setup instructions below for how to obtain and use the dataset.
 
 ## ⚙️ How It Works
 
