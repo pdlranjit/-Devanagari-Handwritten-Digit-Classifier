@@ -26,6 +26,7 @@ class DevanagariCNN(nn.Module):
         x = self.fc2(x)
         return x
 
+
 @st.cache_resource
 def load_model():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -34,9 +35,9 @@ def load_model():
     model.eval()
     return model, device
 
+
 model, device = load_model()
 class_names = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
-
 
 transform = transforms.Compose([
     transforms.Grayscale(),
@@ -44,6 +45,49 @@ transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize((0.5,), (0.5,))
 ])
+
+
+def preprocess_image(image):
+    """
+    Converts an arbitrary uploaded photo (dark digit on light background,
+    off-center, with margins/noise) into the same style as the training
+    dataset: white digit on black background, tightly cropped, centered,
+    with a small padding margin.
+    """
+    # Convert to grayscale numpy array
+    img = image.convert("L")
+    img_array = np.array(img).astype(np.float32)
+
+    # Auto-invert if background is light (dataset expects white digit on black bg)
+    if img_array.mean() > 127:
+        img_array = 255 - img_array
+
+    # Threshold to remove faint noise/shadows
+    img_array = np.where(img_array > 60, img_array, 0)
+    img_array = img_array.astype(np.uint8)
+
+    # Find bounding box of the digit (non-zero pixels)
+    coords = np.column_stack(np.where(img_array > 20))
+    if coords.size > 0:
+        y0, x0 = coords.min(axis=0)
+        y1, x1 = coords.max(axis=0)
+        img_array = img_array[y0:y1 + 1, x0:x1 + 1]
+
+    # Pad to square
+    h, w = img_array.shape
+    size = max(h, w)
+    padded = np.zeros((size, size), dtype=np.uint8)
+    y_off = (size - h) // 2
+    x_off = (size - w) // 2
+    padded[y_off:y_off + h, x_off:x_off + w] = img_array
+
+    # Add margin so digit doesn't touch the edges (like typical dataset samples)
+    margin = max(size // 5, 4)
+    final_size = size + 2 * margin
+    final_img = np.zeros((final_size, final_size), dtype=np.uint8)
+    final_img[margin:margin + size, margin:margin + size] = padded
+
+    return Image.fromarray(final_img)
 
 
 st.title("Devanagari Handwritten Digit Classifier")
@@ -55,8 +99,11 @@ if uploaded_file is not None:
     image = Image.open(uploaded_file).convert("RGB")
     st.image(image, caption="Uploaded Image", width=200)
 
-  
-    img_tensor = transform(image).unsqueeze(0).to(device)  # add batch dimension
+    # Preprocess to match training data style (inverted, cropped, centered)
+    processed = preprocess_image(image)
+    st.image(processed, caption="Preprocessed (model input)", width=150)
+
+    img_tensor = transform(processed).unsqueeze(0).to(device)
 
     # Predict
     with torch.no_grad():
