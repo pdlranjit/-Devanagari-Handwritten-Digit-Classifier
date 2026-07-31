@@ -2,7 +2,7 @@ import streamlit as st
 import torch
 import torch.nn as nn
 from torchvision import transforms
-from PIL import Image
+from PIL import Image, ImageOps
 import numpy as np
 
 
@@ -47,27 +47,56 @@ transform = transforms.Compose([
 ])
 
 
+def otsu_threshold(img_array):
+    """Compute an adaptive binarization threshold (Otsu's method) without cv2."""
+    hist, _ = np.histogram(img_array, bins=256, range=(0, 256))
+    total = img_array.size
+    sum_total = np.dot(np.arange(256), hist)
+    sum_b, w_b = 0.0, 0
+    max_var, threshold = 0.0, 128
+    for i in range(256):
+        w_b += hist[i]
+        if w_b == 0:
+            continue
+        w_f = total - w_b
+        if w_f == 0:
+            break
+        sum_b += i * hist[i]
+        m_b = sum_b / w_b
+        m_f = (sum_total - sum_b) / w_f
+        var_between = w_b * w_f * (m_b - m_f) ** 2
+        if var_between > max_var:
+            max_var = var_between
+            threshold = i
+    return threshold
+
+
 def preprocess_image(image):
     """
     Converts an arbitrary uploaded photo (dark digit on light background,
-    off-center, with margins/noise) into the same style as the training
-    dataset: white digit on black background, tightly cropped, centered,
-    with a small padding margin.
+    off-center, with shadows/noise) into the same style as the training
+    dataset: pure white digit on pure black background, tightly cropped,
+    centered, with a small padding margin.
     """
-    # Convert to grayscale numpy array
-    img = image.convert("L")
-    img_array = np.array(img).astype(np.float32)
+    # Convert to grayscale and boost contrast so the digit stands out
+    img = ImageOps.grayscale(image)
+    img = ImageOps.autocontrast(img, cutoff=2)
+    img_array = np.array(img).astype(np.uint8)
 
-    # Auto-invert if background is light (dataset expects white digit on black bg)
-    if img_array.mean() > 127:
+    # Decide polarity using the border pixels (background), not the whole image,
+    # since the digit only occupies a small portion of the frame.
+    border_pixels = np.concatenate([
+        img_array[0, :], img_array[-1, :], img_array[:, 0], img_array[:, -1]
+    ])
+    if border_pixels.mean() > 127:
         img_array = 255 - img_array
 
-    # Threshold to remove faint noise/shadows
-    img_array = np.where(img_array > 60, img_array, 0)
-    img_array = img_array.astype(np.uint8)
+    # Adaptive binarization -> pure black (0) / white (255), no gray fog
+    thresh = otsu_threshold(img_array)
+    img_array = np.where(img_array > thresh, 255, 0).astype(np.uint8)
 
-    # Find bounding box of the digit (non-zero pixels)
-    coords = np.column_stack(np.where(img_array > 20))
+    # Find bounding box of the digit (white pixels only)
+    coords = np.column_stack(np.where(img_array == 255))
     if coords.size > 0:
         y0, x0 = coords.min(axis=0)
         y1, x1 = coords.max(axis=0)
