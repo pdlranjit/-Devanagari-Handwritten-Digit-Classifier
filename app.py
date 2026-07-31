@@ -2,7 +2,7 @@ import streamlit as st
 import torch
 import torch.nn as nn
 from torchvision import transforms
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageFilter, ImageChops
 import numpy as np
 
 
@@ -73,27 +73,34 @@ def otsu_threshold(img_array):
 
 def preprocess_image(image):
     """
-    Converts an arbitrary uploaded photo (dark digit on light background,
-    off-center, with shadows/noise) into the same style as the training
+    Converts an arbitrary uploaded photo (dark digit on paper, with uneven
+    lighting/glare/shadows, off-center) into the same style as the training
     dataset: pure white digit on pure black background, tightly cropped,
     centered, with a small padding margin.
+
+    Key idea: instead of a single global brightness threshold (which gets
+    fooled by glare or shadows on the paper), we estimate the local paper
+    brightness with a heavy blur and subtract it out. What's left over is
+    just the ink stroke, regardless of uneven lighting.
     """
-    # Convert to grayscale and boost contrast so the digit stands out
     img = ImageOps.grayscale(image)
-    img = ImageOps.autocontrast(img, cutoff=2)
-    img_array = np.array(img).astype(np.uint8)
 
-    # Decide polarity using the border pixels (background), not the whole image,
-    # since the digit only occupies a small portion of the frame.
-    border_pixels = np.concatenate([
-        img_array[0, :], img_array[-1, :], img_array[:, 0], img_array[:, -1]
-    ])
-    if border_pixels.mean() > 127:
-        img_array = 255 - img_array
+    # Estimate the smooth local "paper brightness" (includes glare/shadow)
+    background = img.filter(ImageFilter.GaussianBlur(radius=21))
 
-    # Adaptive binarization -> pure black (0) / white (255), no gray fog
-    thresh = otsu_threshold(img_array)
-    img_array = np.where(img_array > thresh, 255, 0).astype(np.uint8)
+    # Subtract it out: result is bright only where the original was
+    # noticeably darker than its local surroundings (i.e. the ink stroke)
+    diff = ImageChops.subtract(background, img)
+    diff_array = np.array(diff).astype(np.float32)
+
+    # Rescale so the strongest stroke pixel hits 255 (boosts faint pencil marks)
+    if diff_array.max() > 0:
+        diff_array = diff_array * (255.0 / diff_array.max())
+    diff_array = diff_array.astype(np.uint8)
+
+    # Adaptive binarization on the cleaned residual -> pure black/white
+    thresh = otsu_threshold(diff_array)
+    img_array = np.where(diff_array > thresh, 255, 0).astype(np.uint8)
 
     # Find bounding box of the digit (white pixels only)
     coords = np.column_stack(np.where(img_array == 255))
